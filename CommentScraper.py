@@ -39,7 +39,7 @@ class CommentScraper:
             print("Authentication success.")
         except (KeyError):
             print("Authentication failed.")
-            print("Could not find secrets.py containing a client_id, client_secret, and user_agent.")
+            print("Could not find .env file containing a client_id, client_secret, and user_agent.")
 
 
     def _get_top_posts(self, subreddit, time_filter='year', limit=999):
