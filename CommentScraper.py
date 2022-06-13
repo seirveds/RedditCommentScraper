@@ -1,10 +1,12 @@
 import csv
+from datetime import datetime
 import os
+import re
 
 from dotenv import load_dotenv
 import praw
 from praw.models import Comment, MoreComments
-from prawcore.exceptions import Forbidden
+from prawcore.exceptions import Forbidden, Redirect
 from tqdm import tqdm
 
 
@@ -18,7 +20,8 @@ class CommentScraper:
         self._authenticate()
 
         self.posts = None
-        self.comments = []
+        # Every comment stored in a dict containing post_title, comment text, author, and upvotes as values
+        self.comments = []  
         self.limit = None
         self.subreddit = None
 
@@ -57,6 +60,12 @@ class CommentScraper:
         # Get subreddit instance of passed subreddit name
         subreddit = self.reddit.subreddit(subreddit)
 
+        # Try accessing a random attribute to check if the passed subreddit actually exists or not
+        try:
+            subreddit.fullname
+        except Redirect:
+            raise Exception(f"Passed subreddit '{subreddit}' does not exist. ")
+
         # Check if subreddit is quarantined. If this is the case
         # opt in to scrape quarantined data
         try:
@@ -72,7 +81,7 @@ class CommentScraper:
         self.posts = top_posts_generator
 
 
-    def _retrieve_post_comments(self, upvote_threshold=10):
+    def _retrieve_post_comments(self, upvote_threshold=10, strip_comments=True):
         """
         Iterate over the posts attribute and store each comment in the comments attribute.
 
@@ -98,11 +107,18 @@ class CommentScraper:
 
                     # Only save comment text if score is higher than threshold
                     if score > upvote_threshold:
-                        # Get comment text from Comment object
+                        # Get comment text, clean if strip_comments is set to True
                         comment_text = obj.body
+                        if strip_comments:
+                            comment_text = self.strip_newlines(obj.body)
 
-                        # Store comments in list
-                        self.comments.append(comment_text)
+                        # Store comments + metadata in list
+                        self.comments.append({
+                            "post": post.title,
+                            "author": obj.author,
+                            "comment": comment_text,
+                            "upvotes": score
+                        })
 
                 # Check if popped object is an instance of the praw MoreComments class
                 elif isinstance(obj, MoreComments):
@@ -131,7 +147,7 @@ class CommentScraper:
         """
         # Use subreddit name as filename if no path is passed
         if path is None:
-            path = f"{self.subreddit}.csv"
+            path = f"{self.subreddit}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
 
         # Create directory passed in path.
         try:
@@ -144,13 +160,15 @@ class CommentScraper:
             pass 
 
         # Save as csv using built-in lib, prevents extra pandas dependency
-        with open(path, 'w', encoding='UTF-8') as csv_file:
-            writer = csv.writer(csv_file, quoting=csv.QUOTE_ALL)
-            writer.writerow(self.comments)
+        with open(path, 'w', encoding='UTF-8', newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=self.comments[0].keys(), quoting=csv.QUOTE_ALL)
+            writer.writeheader()
+            for comment_dict in self.comments:
+                writer.writerow(comment_dict)
 
 
-    def scrape_subreddit(self, subreddit, time_filter='year',
-                         limit=999, upvote_threshold=5, path=None):
+    def scrape_subreddit(self, subreddit, time_filter='year', limit=999, upvote_threshold=5,
+                         path=None, strip_comments=True):
         """
         Wrapper method for retrieving top posts, extracting comments, and saving comments to disk
 
@@ -160,16 +178,34 @@ class CommentScraper:
                 be one of: 'all', 'day', 'month', 'week', 'year', 'hour'.
             - limit (int): amount of top posts to scrape comments from. Max 999.
             - upvote_threshold (int): minimum amount of upvotes a comment must have to be saved.
-             - path (string): if None save file as {subreddit_name}.csv, otherwise as given path.
+            - path (string): if None save file as {subreddit_name}.csv, otherwise as given path.
+            - strip_comments (boolean): remove newlines and markdown syntax from comments.
         """
         if path is not None and os.path.exists(path):
             raise FileExistsError("Passed path already exists.")
 
         self._get_top_posts(subreddit, time_filter=time_filter, limit=limit)
 
-        self._retrieve_post_comments(upvote_threshold=upvote_threshold)
+        self._retrieve_post_comments(upvote_threshold=upvote_threshold, strip_comments=strip_comments)
 
         self._save_comments(path=path)
+
+    @staticmethod
+    def strip_newlines(comment):
+        """
+        Remove newlines and duplicate whitespaces from comment. 
+        
+        params:
+            - comment (string): comment to process.
+        """
+
+        # Matches one or two newlines
+        comment = re.sub(r"\n[\n]?", " ", comment)
+        # Matches one or more whitespaces
+        comment = re.sub(r"\s+", r" ", comment)
+
+        return comment
+
 
 
 if __name__ == '__main__':
